@@ -1,0 +1,46 @@
+name: Desktop builds
+
+on:
+  push:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-builds.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            artifact: EzEQ-Windows-11-x64
+          - runner: macos-15
+            artifact: EzEQ-macOS-Apple-Silicon
+          - runner: macos-15-intel
+            artifact: EzEQ-macOS-Intel
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt "pyinstaller>=6,<7"
+      - run: python -m PyInstaller --noconfirm EzEQ.spec
+      - name: Archive macOS app with permissions and symlinks
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent dist/EzEQ.app "${{ matrix.artifact }}.zip"
+      - name: Archive Windows app and its supporting files
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path dist/EzEQ -DestinationPath "${{ matrix.artifact }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: desktop/${{ matrix.artifact }}.zip
+          if-no-files-found: error

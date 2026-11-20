@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=EzEQ
+Comment=Adjust six frequency bands for desktop playback
+Exec=/usr/bin/personal-eq
+Icon=multimedia-volume-control
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;

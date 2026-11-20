@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=EzEQ
+Comment=Restore equalizer settings at login
+Exec=/usr/bin/personal-eq --restore
+TryExec=/usr/bin/personal-eq
+Terminal=false

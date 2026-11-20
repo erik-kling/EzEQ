@@ -1,0 +1,10 @@
+[Unit]
+Description=EzEQ stereo audio filter
+Requires=pipewire.service
+After=pipewire.service
+PartOf=pipewire.service
+
+[Service]
+ExecStart=/usr/bin/pipewire -c /usr/share/personal-eq/personal-eq.conf
+Restart=on-failure
+RestartSec=1

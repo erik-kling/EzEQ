@@ -1,0 +1,412 @@
+#!/usr/bin/python3
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk, Pango
+
+BANDS = (60, 150, 400, 1000, 2400, 15000)
+LABELS = ("60 Hz", "150 Hz", "400 Hz", "1 kHz", "2.4 kHz", "15 kHz")
+DEFAULT_BANDS = (0.0,) * len(BANDS)
+DEFAULT_VOLUME = 0.0
+MUTE = -61.0
+SINK = "personal_eq_sink"
+STATE = Path(os.getenv("XDG_CONFIG_HOME") or Path.home() / ".config") / "personal-eq/settings.json"
+PRESETS = STATE.with_name("presets.json")
+PRESET_COUNT = 5
+
+
+def profile_values(data):
+    if isinstance(data, dict):
+        gains, volume = data.get("bands"), data.get("volume")
+        if isinstance(gains, (list, tuple)) and len(gains) == len(BANDS) and all(
+            type(x) in (int, float) and -12 <= x <= 12 for x in gains
+        ) and type(volume) in (int, float) and MUTE <= volume <= 6:
+            return tuple(gains), volume
+    return None
+
+
+def load():
+    try:
+        return profile_values(json.loads(STATE.read_text())) or (DEFAULT_BANDS, DEFAULT_VOLUME)
+    except (OSError, ValueError):
+        return DEFAULT_BANDS, DEFAULT_VOLUME
+
+
+def load_presets():
+    slots = [{"name": f"Preset {i + 1}"} for i in range(PRESET_COUNT)]
+    try:
+        saved = json.loads(PRESETS.read_text())
+    except (OSError, ValueError):
+        return slots
+    if not isinstance(saved, list):
+        return slots
+    for slot, data in zip(slots, saved):
+        if not isinstance(data, dict):
+            continue
+        name = data.get("name")
+        if isinstance(name, str) and name.strip():
+            slot["name"] = name.strip()[:40]
+        values = profile_values(data)
+        if values is not None:
+            slot["bands"], slot["volume"] = values
+    return slots
+
+
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as out:
+        temp = Path(out.name)
+        try:
+            json.dump(value, out)
+            out.flush()
+            temp.replace(path)
+        finally:
+            temp.unlink(missing_ok=True)
+
+
+def save(gains, volume):
+    write_json(STATE, {"bands": gains, "volume": volume})
+
+
+def run(*args):
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=5)
+    if proc.returncode or "Error:" in proc.stderr or "Error:" in proc.stdout:
+        raise RuntimeError((proc.stderr or proc.stdout).strip() or f"{args[0]} failed")
+    return proc.stdout
+
+
+def set_controls(gains, volume):
+    params = []
+    for frequency, gain in zip(BANDS, gains):
+        params.extend((f"band{frequency}:Gain", float(gain)))
+    amplitude = 0.0 if volume == MUTE else 10 ** (volume / 20)
+    props = {"params": params, "channelVolumes": [amplitude, amplitude], "mute": volume == MUTE}
+    run("pw-cli", "set-param", SINK, "Props", json.dumps(props))
+
+
+def apply(gains, volume, initialize):
+    if initialize:
+        if run("systemctl", "--user", "show", "personal-eq.service",
+               "--property=NeedDaemonReload", "--value").strip() == "yes":
+            run("systemctl", "--user", "daemon-reload")
+        run("systemctl", "--user", "start", "personal-eq.service")
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            try:
+                sinks = run("pactl", "list", "short", "sinks")
+            except (RuntimeError, subprocess.TimeoutExpired):
+                # The PulseAudio interface can still be starting at login.
+                sinks = ""
+            if any(row.split()[1:2] == [SINK] for row in sinks.splitlines()):
+                break
+            time.sleep(0.2)
+        else:
+            raise RuntimeError("PipeWire did not publish the EzEQ output.")
+    set_controls(gains, volume)
+    if initialize:
+        run("pactl", "set-default-sink", SINK)
+
+
+def db_label(value):
+    return f"{value:+.1f} dB" if value else "0 dB"
+
+
+class Window(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="EzEQ")
+        self.set_default_size(510, 360)
+        self.set_border_width(18)
+        self.pool = ThreadPoolExecutor(max_workers=1)
+        self.ready = self.busy = self.closing = False
+        self.pending = True
+        self.timer = 0
+        self.scales = []
+        self.presets = load_presets()
+        self.preset_click = 0
+        self.editing_preset = None
+        self.previous = None
+        gains, volume = load()
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.add(root)
+        root.add(self.preset_bar())
+        self.plot = Gtk.Box(homogeneous=True)
+        root.pack_start(self.plot, True, True, 0)
+        for label, value in zip(LABELS, gains):
+            column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            self.plot.add(column)
+            scale = Gtk.Scale.new_with_range(Gtk.Orientation.VERTICAL, -12, 12, 0.1)
+            scale.set_inverted(True)
+            scale.set_value_pos(Gtk.PositionType.TOP)
+            scale.set_size_request(-1, 175)
+            scale.set_value(value)
+            scale.connect("format-value", lambda _, v: db_label(v))
+            scale.get_accessible().set_name(label)
+            self.scales.append(scale)
+            column.pack_start(scale, True, True, 0)
+            column.add(Gtk.Label(label=label))
+        self.plot.connect("draw", self.draw_curve)
+
+        root.add(Gtk.Separator())
+        row = Gtk.Box(spacing=12)
+        root.add(row)
+        row.add(Gtk.Label(label="Volume"))
+        self.volume = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, MUTE, 6, 0.5)
+        self.volume.set_value_pos(Gtk.PositionType.RIGHT)
+        self.volume.set_value(volume)
+        self.volume.add_mark(0, Gtk.PositionType.BOTTOM, "0 dB")
+        self.volume.get_accessible().set_name("Output volume")
+        self.volume.set_tooltip_text("Boosting loud material can cause distortion.")
+        self.volume.connect("format-value", lambda _, v: "Mute" if v == MUTE else db_label(v))
+        row.pack_start(self.volume, True, True, 0)
+        reset = Gtk.Button(label="Reset", valign=Gtk.Align.CENTER)
+        reset.set_tooltip_text("Return all six bands and output volume to 0 dB.")
+        reset.connect("clicked", self.reset)
+        row.pack_end(reset, False, False, 0)
+        self.previous_button = Gtk.Button(label="Previous", valign=Gtk.Align.CENTER)
+        self.previous_button.set_tooltip_text("Restore the settings from before the last reset or preset change.")
+        self.previous_button.set_sensitive(False)
+        self.previous_button.connect("clicked", self.restore_previous)
+        row.pack_end(self.previous_button, False, False, 0)
+        self.status = Gtk.Label(label="Connecting to PipeWire…", xalign=0)
+        self.status.set_line_wrap(True)
+        root.add(self.status)
+        for scale in [*self.scales, self.volume]:
+            scale.connect("value-changed", self.changed)
+        self.connect("delete-event", self.close_requested)
+        self.show_all()
+        self.dispatch()
+
+    def preset_bar(self):
+        row = Gtk.Box(spacing=6)
+        slots = Gtk.Box(spacing=6, homogeneous=True)
+        row.pack_start(slots, True, True, 0)
+        menu = Gtk.Menu()
+        save_button = Gtk.MenuButton(label="Save preset")
+        save_button.set_popup(menu)
+        row.add(save_button)
+        self.preset_widgets = []
+        for index, slot in enumerate(self.presets):
+            stack = Gtk.Stack()
+            button = Gtk.Button()
+            label = Gtk.Label(ellipsize=Pango.EllipsizeMode.END, max_width_chars=10)
+            button.add(label)
+            button.connect("clicked", self.preset_clicked, index)
+            button.connect("button-press-event", self.preset_pressed, index)
+            entry = Gtk.Entry(width_chars=4, max_length=40)
+            entry.connect("activate", self.finish_rename, index)
+            entry.connect("focus-out-event", self.preset_focus_out, index)
+            stack.add_named(button, "button")
+            stack.add_named(entry, "entry")
+            stack.set_visible_child_name("button")
+            slots.add(stack)
+            destination = Gtk.MenuItem()
+            destination.connect("activate", self.save_preset, index)
+            menu.append(destination)
+            self.preset_widgets.append((stack, label, entry, destination))
+            self.refresh_preset(index)
+        menu.show_all()
+        return row
+
+    def refresh_preset(self, index):
+        stack, label, _, destination = self.preset_widgets[index]
+        slot = self.presets[index]
+        name = slot["name"]
+        label.set_text(name)
+        button = stack.get_child_by_name("button")
+        button.get_accessible().set_name(name)
+        message = "Click to apply. Double-click to rename." if "bands" in slot else "Empty. Double-click to name."
+        button.set_tooltip_text(f"{name}\n{message}")
+        destination.set_label(f"{index + 1}. {name}")
+
+    def preset_clicked(self, _, index):
+        if self.editing_preset == index:
+            return
+        if self.preset_click:
+            GLib.source_remove(self.preset_click)
+        # Wait for GTK's double-click interval before applying a preset.
+        delay = self.get_settings().get_property("gtk-double-click-time")
+        self.preset_click = GLib.timeout_add(delay + 1, self.apply_preset, index)
+
+    def preset_pressed(self, _, event, index):
+        if event.button != 1 or event.type != Gdk.EventType.DOUBLE_BUTTON_PRESS:
+            return False
+        if self.preset_click:
+            GLib.source_remove(self.preset_click)
+            self.preset_click = 0
+        stack, _, entry, _ = self.preset_widgets[index]
+        self.editing_preset = index
+        entry.set_text(self.presets[index]["name"])
+        stack.set_visible_child(entry)
+        entry.grab_focus()
+        entry.select_region(0, -1)
+        return True
+
+    def preset_focus_out(self, entry, _, index):
+        self.finish_rename(entry, index)
+        return False
+
+    def finish_rename(self, entry, index):
+        if self.editing_preset != index:
+            return
+        self.editing_preset = None
+        name = entry.get_text().strip()
+        if name and name != self.presets[index]["name"]:
+            self.store_preset(index, {**self.presets[index], "name": name})
+        self.preset_widgets[index][0].set_visible_child_name("button")
+
+    def save_preset(self, _, index):
+        gains, volume = self.current_values()
+        self.store_preset(index, {**self.presets[index], "bands": gains, "volume": volume})
+
+    def store_preset(self, index, slot):
+        presets = self.presets.copy()
+        presets[index] = slot
+        try:
+            write_json(PRESETS, presets)
+        except OSError as error:
+            dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.ERROR,
+                                       buttons=Gtk.ButtonsType.CLOSE, text="Could not save the preset.")
+            dialog.format_secondary_text(str(error))
+            dialog.run()
+            dialog.destroy()
+            return
+        self.presets = presets
+        self.refresh_preset(index)
+
+    def apply_preset(self, index):
+        self.preset_click = 0
+        values = profile_values(self.presets[index])
+        if values is not None:
+            self.replace_values(values)
+        return False
+
+    def draw_curve(self, widget, cr):
+        color = widget.get_style_context().get_color(Gtk.StateFlags.NORMAL)
+        cr.set_source_rgba(color.red, color.green, color.blue, 0.55)
+        cr.set_line_width(1.5)
+        points = []
+        for scale in self.scales:
+            start, end = scale.get_slider_range()
+            point = scale.translate_coordinates(widget, scale.get_allocated_width() // 2,
+                                                (start + end) // 2)
+            if point is None:
+                return False
+            points.append(point[-2:])
+
+        # Limit shared tangents so the curve stays between neighboring gains.
+        spans = [right[0] - left[0] for left, right in zip(points, points[1:])]
+        if any(span == 0 for span in spans):
+            return False
+        slopes = [(right[1] - left[1]) / span
+                  for left, right, span in zip(points, points[1:], spans)]
+        tangents = [slopes[0]]
+        for before, after in zip(slopes, slopes[1:]):
+            tangents.append(2 * before * after / (before + after)
+                            if before * after > 0 else 0)
+        tangents.append(slopes[-1])
+        cr.move_to(*points[0])
+        for i, ((x, y), (end_x, end_y)) in enumerate(zip(points, points[1:])):
+            step = spans[i] / 3
+            cr.curve_to(x + step, y + step * tangents[i],
+                        end_x - step, end_y - step * tangents[i + 1], end_x, end_y)
+        cr.stroke()
+        return False
+
+    def reset(self, _):
+        self.replace_values((DEFAULT_BANDS, DEFAULT_VOLUME))
+
+    def restore_previous(self, _):
+        if self.previous is not None:
+            self.replace_values(self.previous)
+
+    def current_values(self):
+        return tuple(scale.get_value() for scale in self.scales), self.volume.get_value()
+
+    def replace_values(self, values):
+        current = self.current_values()
+        if values == current:
+            return
+        self.previous = current
+        self.previous_button.set_sensitive(True)
+        gains, volume = values
+        for scale, gain in zip(self.scales, gains):
+            scale.set_value(gain)
+        self.volume.set_value(volume)
+
+    def changed(self, _):
+        self.pending = True
+        self.plot.queue_draw()
+        if not self.timer and not self.busy:
+            self.timer = GLib.timeout_add(20, self.dispatch)
+
+    def dispatch(self):
+        self.timer = 0
+        if self.busy or not self.pending:
+            return False
+        self.pending = False
+        self.busy = True
+        gains, volume = self.current_values()
+        future = self.pool.submit(self.update, gains, volume, not self.ready)
+        future.add_done_callback(lambda f: GLib.idle_add(self.finished, f))
+        return False
+
+    @staticmethod
+    def update(gains, volume, initialize):
+        save(gains, volume)
+        apply(gains, volume, initialize)
+
+    def finished(self, future):
+        self.busy = False
+        error = future.exception()
+        self.ready = error is None
+        if error:
+            self.status.set_text(f"EQ unavailable. {error}")
+            self.status.show()
+        else:
+            self.status.hide()
+        if self.pending:
+            self.dispatch()
+        elif self.closing:
+            self.destroy()
+        return False
+
+    def close_requested(self, *_):
+        self.closing = True
+        self.set_sensitive(False)
+        if self.preset_click:
+            GLib.source_remove(self.preset_click)
+            self.preset_click = 0
+        if self.timer:
+            GLib.source_remove(self.timer)
+            self.timer = 0
+        self.dispatch()
+        return self.busy
+
+
+def activate(app):
+    window = app.get_active_window() or Window(app)
+    window.present()
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--restore"]:
+        gains, volume = load()
+        try:
+            apply(gains, volume, initialize=True)
+        except (OSError, subprocess.TimeoutExpired, RuntimeError) as error:
+            raise SystemExit(f"EzEQ could not start. {error}")
+        raise SystemExit(0)
+
+    app = Gtk.Application(application_id="local.personal.Equalizer")
+    app.connect("activate", activate)
+    raise SystemExit(app.run())
