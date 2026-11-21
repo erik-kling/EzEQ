@@ -68,7 +68,9 @@ final class EzEQModel: ObservableObject {
     private let route = AudioRoute()
 
     init() {
-        (profile, presets) = Settings.load()
+        let (savedProfile, savedPresets) = Settings.load()
+        _profile = Published(initialValue: savedProfile)
+        _presets = Published(initialValue: savedPresets)
     }
 
     func start() {
