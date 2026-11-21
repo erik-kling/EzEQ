@@ -20,7 +20,7 @@ for arch in arm64 x86_64; do
         -framework CoreAudio -o "$stage/EzEQ-$arch"
 done
 lipo -create "$stage/EzEQ-arm64" "$stage/EzEQ-x86_64" -output "$app/Contents/MacOS/EzEQ"
-lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/EzEQ"
+lipo "$app/Contents/MacOS/EzEQ" -verify_arch arm64 x86_64
 plutil -lint "$app/Contents/Info.plist"
 codesign --force --sign - "$app"
 codesign --verify --strict "$app"
