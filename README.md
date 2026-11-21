@@ -2,50 +2,39 @@
 
 Easy to use, low profile Equaliser for Linux, Mac and Windows.
 
-A six-band stereo equalizer for Linux desktops using PipeWire, WirePlumber, and GTK 3. The curve follows your slider positions. Closing the window keeps the audio filter running.
+## Download EzEQ
 
-## Install
+- **Windows 11 (Intel or AMD, x64)** — Bundled installer pending native testing. <!-- download:windows -->
+- **macOS 14.2+ (Apple Silicon or Intel)** — Download pending native testing and notarization. <!-- download:macos -->
+- **Linux Mint 22 and compatible PipeWire desktops** — [Build the Debian package](#linux).
 
-On Linux Mint 22 or a compatible Debian-based desktop with PipeWire 1.0 or newer, download the Debian package and open it with your package installer. From a terminal in the download directory you can also run:
+Use the link for your operating system when it appears. The **Source code** archives on GitHub are for developers.
 
-```sh
-sudo apt install ./EzEQ_1.1.0_all.deb
-```
+### Windows 11
 
-Launch **EzEQ** from the application menu. EzEQ restores your saved settings and selects its virtual output in the background when you log in. Use **Reset** to return all six bands and output volume to 0 dB.
+Run the EzEQ installer. It includes VB-CABLE by VB-Audio, so there’s no separate download. Choose **Install Driver** if VB-CABLE Setup opens, and restart if prompted. VB-CABLE is donationware. [Support VB-Audio](https://vb-audio.com/Cable/)
 
-Use **Save preset** to store the current sliders in one of the five slots. Click a slot once to apply it. Double-click its name, type a new one, and press Enter or click outside the box to save it. **Previous** switches back to the settings from before your last reset or preset change in the open window.
+Open **EzEQ** from the Start menu. Click **Open Windows Sound settings** and set the system output to **CABLE Input**. In EzEQ, choose your headphones, speakers, or DAC and click **Start audio**. Before stopping or closing EzEQ, switch Windows back to your physical output to hear audio directly.
 
-## Build and share
+### macOS
 
-Run `./build-deb` from the source checkout on a system with `dpkg-deb` installed. Send the resulting file from `dist/` as a document or attach it to a GitHub Release. The installer is for Linux computers.
+Open the disk image and drag **EzEQ** into Applications. Start audio in EzEQ and allow system audio capture when prompted. Choose speakers, headphones, or a DAC in **System Settings → Sound**. EzEQ uses Core Audio for routing. Click **Stop audio** or quit to return to direct playback.
 
-## macOS and Windows 11
+### Linux
 
-The desktop preview provides six EQ bands, output volume, Reset, Previous, and five named presets. The app processes stereo audio from a virtual device and sends it to the physical output you choose. Run EzEQ while you want the EQ applied.
-
-### Route desktop audio
-
-1. **macOS** — install [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole). In System Settings under Sound, select **BlackHole 2ch** as the system output. If prompted, grant EzEQ permission to access the virtual audio input.
-2. **Windows 11** — install [VB-CABLE](https://vb-audio.com/Cable/). In Windows sound settings select **CABLE Input** as the system output. In EzEQ select **CABLE Output** as the virtual input.
-3. In EzEQ choose the virtual input and the physical output you want, such as headphones or a USB DAC. Turn down the physical output first, then click **Start audio**. If the stream fails, check that both devices support stereo at 48 kHz or 44.1 kHz. On macOS, check the formats in Audio MIDI Setup. On Windows, check the endpoint formats and microphone access for desktop apps.
-4. To return to direct audio, set the system output back to your physical device. Closing EzEQ stops the desktop preview’s audio stream.
-
-### Run or build the preview
-
-Install Python 3.12 with Tk support on your Mac or Windows PC, then run these commands from the project directory:
+On Linux Mint 22 or a compatible Debian-based desktop with PipeWire 1.0 or newer, build and install the Debian package from the source checkout.
 
 ```sh
-cd desktop
-python -m pip install -r requirements.txt
-python ezeq.py
+./build-deb
+sudo apt install ./dist/EzEQ_1.1.0_all.deb
 ```
 
-To build the app on the target platform:
+Open **EzEQ** from the application menu. It restores your settings at login and keeps applying them when you close the window.
 
-```sh
-python -m pip install "pyinstaller>=6,<7"
-python -m PyInstaller --noconfirm EzEQ.spec
-```
+## Presets and controls
 
-On Windows, keep the whole `desktop/dist/EzEQ` folder together and open `EzEQ.exe`. On macOS, open `desktop/dist/EzEQ.app`. These builds are unsigned for distribution. GitHub Actions can build downloadable archives for Windows x64, Apple Silicon, and Intel Macs. The virtual audio drivers are installed separately.
+Use **Save preset** to store the six bands and volume in one of five slots. Click a slot to apply it, or double-click its name to edit it. **Reset** returns all controls to 0 dB. **Previous** restores the settings from before the last reset or preset change in the open window.
+
+## Developers
+
+See [desktop build and release instructions](desktop/RELEASE.md) for local builds, native acceptance checks, and signing.

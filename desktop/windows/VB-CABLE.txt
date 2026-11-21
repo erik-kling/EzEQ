@@ -1,0 +1,10 @@
+EzEQ uses VB-CABLE by VB-Audio Software to process desktop playback.
+
+VB-CABLE is donationware. If you find it useful, you can support VB-Audio at
+https://vb-audio.com/Cable/
+
+Continue to install EzEQ. If VB-CABLE Setup opens, select Install Driver and
+approve the Windows driver prompt. If prompted to restart, open EzEQ from the
+Start menu after restarting your PC.
+
+Uninstalling EzEQ leaves VB-CABLE available for any other apps that use it.

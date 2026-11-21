@@ -66,6 +66,11 @@ class Window:
         frame.pack(fill="both", expand=True)
         routes = ttk.Frame(frame)
         routes.pack(fill="x", pady=(0, 10))
+        if sys.platform == "win32":
+            ttk.Label(routes, wraplength=590, text=(
+                "In Windows Sound settings, choose CABLE Input as your system output. "
+                "Then select your headphones, speakers, or DAC below and start audio."
+            )).pack(anchor="w", pady=(0, 6))
         self.inputs = ttk.Combobox(routes, textvariable=self.input, state="readonly", width=24)
         self.outputs = ttk.Combobox(routes, textvariable=self.output, state="readonly", width=24)
         for widget, label in ((self.inputs, "Virtual input"), (self.outputs, "Headphones / DAC")):
@@ -74,6 +79,8 @@ class Window:
         controls = ttk.Frame(routes)
         controls.pack(fill="x", pady=(6, 0))
         ttk.Button(controls, text="Refresh devices", command=self.refresh).pack(side="left")
+        if sys.platform == "win32":
+            ttk.Button(controls, text="Open Windows Sound settings", command=self.open_sound_settings).pack(side="left", padx=6)
         self.start_button = ttk.Button(controls, text="Start audio", command=self.toggle)
         self.start_button.pack(side="right")
         self.input.trace_add("write", self.changed)
@@ -143,7 +150,26 @@ class Window:
         if self.output.get() not in self.destinations:
             self.output.set("")
         if not self.sources:
-            self.status.set("Install and enable the virtual audio device, then reopen EzEQ.")
+            self.status.set(
+                "VB-CABLE is unavailable. Restart Windows if you just installed it, "
+                "or run the EzEQ installer again to repair it." if sys.platform == "win32"
+                else "Install and enable the virtual audio device, then reopen EzEQ."
+            )
+
+    def open_sound_settings(self):
+        try:
+            os.startfile("ms-settings:sound")
+        except OSError as error:
+            messagebox.showerror("EzEQ", f"Open Settings → System → Sound manually. {error}")
+
+    def confirm_stop(self, action):
+        if sys.platform != "win32" or not self.sources:
+            return True
+        return messagebox.askokcancel(
+            "Restore direct audio", f"If Windows is using CABLE Input, switch the output "
+            f"back to your headphones, speakers, or DAC in Windows Sound settings before you {action}.",
+            parent=self.root,
+        )
 
     def current(self):
         return tuple(round(v.get(), 1) for v in self.gains), round(self.volume.get(), 1)
@@ -267,6 +293,8 @@ class Window:
 
     def toggle(self):
         if self.audio.thread is not None:
+            if not self.confirm_stop("stop EzEQ"):
+                return
             self.audio.stop.set()
             self.start_button.configure(state="disabled")
             return
@@ -299,6 +327,8 @@ class Window:
         self.root.after(50, self.poll)
 
     def close(self):
+        if not self.confirm_stop("quit EzEQ"):
+            return
         if self.editing is not None:
             self.finish_rename(self.editing)
         self.save()

@@ -2,45 +2,108 @@ name: Desktop builds
 
 on:
   push:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-builds.yml'
+  pull_request:
     paths:
       - 'desktop/**'
       - '.github/workflows/desktop-builds.yml'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Public release to publish
+        type: choice
+        options: [none, windows, macos]
+        default: none
+      native_tests_passed:
+        description: The native acceptance checks in desktop/RELEASE.md have passed
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
-  package:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: windows-2022
-            artifact: EzEQ-Windows-11-x64
-          - runner: macos-15
-            artifact: EzEQ-macOS-Apple-Silicon
-          - runner: macos-15-intel
-            artifact: EzEQ-macOS-Intel
-    runs-on: ${{ matrix.runner }}
-    defaults:
-      run:
-        working-directory: desktop
+  windows:
+    if: inputs.publish != 'macos'
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -r requirements.txt "pyinstaller>=6,<7"
-      - run: python -m PyInstaller --noconfirm EzEQ.spec
-      - name: Archive macOS app with permissions and symlinks
-        if: runner.os == 'macOS'
-        run: ditto -c -k --keepParent dist/EzEQ.app "${{ matrix.artifact }}.zip"
-      - name: Archive Windows app and its supporting files
-        if: runner.os == 'Windows'
-        run: Compress-Archive -Path dist/EzEQ -DestinationPath "${{ matrix.artifact }}.zip"
+          architecture: x64
+      - name: Install packaging tools
+        shell: pwsh
+        run: |
+          python -m pip install -r desktop/requirements.txt "pyinstaller>=6,<7"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Build offline installer
+        shell: pwsh
+        run: ./desktop/windows/build.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: desktop/${{ matrix.artifact }}.zip
+          name: EzEQ-Windows-11-Intel-AMD-x64-Setup
+          path: desktop/dist/EzEQ-Windows-11-Intel-AMD-x64-Setup.exe
           if-no-files-found: error
+
+  macos:
+    if: inputs.publish != 'windows'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./desktop/macos/build.sh
+      - name: Package developer test build
+        if: inputs.publish != 'macos'
+        run: ditto -c -k --keepParent desktop/dist/EzEQ.app desktop/dist/EzEQ-macOS-Test.zip
+      - uses: actions/upload-artifact@v4
+        if: inputs.publish != 'macos'
+        with:
+          name: EzEQ-macOS-Test
+          path: desktop/dist/EzEQ-macOS-Test.zip
+          if-no-files-found: error
+      - name: Sign and notarize Mac download
+        if: github.ref == 'refs/heads/main' && inputs.publish == 'macos' && inputs.native_tests_passed
+        env:
+          MAC_CERTIFICATE: ${{ secrets.MAC_CERTIFICATE }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          MAC_SIGNING_IDENTITY: ${{ secrets.MAC_SIGNING_IDENTITY }}
+          MAC_NOTARY_KEY: ${{ secrets.MAC_NOTARY_KEY }}
+          MAC_NOTARY_KEY_ID: ${{ secrets.MAC_NOTARY_KEY_ID }}
+          MAC_NOTARY_ISSUER_ID: ${{ secrets.MAC_NOTARY_ISSUER_ID }}
+        run: ./desktop/macos/notarize.sh
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main' && inputs.publish == 'macos' && inputs.native_tests_passed
+        with:
+          name: EzEQ-macOS-Apple-Silicon-and-Intel
+          path: desktop/dist/EzEQ-macOS-Apple-Silicon-and-Intel.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, macos]
+    if: >-
+      ${{ always() && github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' && inputs.native_tests_passed &&
+          ((inputs.publish == 'windows' && needs.windows.result == 'success') ||
+           (inputs.publish == 'macos' && needs.macos.result == 'success')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency: ezeq-public-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.publish == 'windows' && 'EzEQ-Windows-11-Intel-AMD-x64-Setup' || 'EzEQ-macOS-Apple-Silicon-and-Intel' }}
+          path: release
+      - name: Publish and verify public download
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PLATFORM: ${{ inputs.publish }}
+        run: bash desktop/publish-release.sh
