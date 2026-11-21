@@ -26,6 +26,7 @@ OSStatus ezeq_audio_io(AudioObjectID device, const AudioTimeStamp *now,
                        AudioBufferList *output, const AudioTimeStamp *output_time, void *context) {
     (void)device; (void)now; (void)input_time; (void)output_time;
     EzEQDSP *dsp = context;
+    if (!dsp) return noErr;
     UInt32 input_channels = 0;
     for (UInt32 i = 0; i < input->mNumberBuffers; ++i)
         input_channels += input->mBuffers[i].mNumberChannels;
