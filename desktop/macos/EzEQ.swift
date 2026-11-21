@@ -159,7 +159,7 @@ private struct Curve: Shape {
     func path(in rect: CGRect) -> Path {
         let step = rect.width / 6
         let points = bands.enumerated().map { index, gain in
-            CGPoint(x: step * (Double(index) + 0.5), y: rect.midY - gain / 12 * (rect.height / 2 - 4))
+            CGPoint(x: step * (CGFloat(index) + 0.5), y: rect.midY - CGFloat(gain) / 12 * (rect.height / 2 - 4))
         }
         var path = Path()
         path.move(to: points[0])
